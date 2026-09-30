@@ -1,0 +1,8 @@
+# List of dependencies for the AirBreda project
+pandas==3.0.6
+requests==2.34.2
+psycopg2-binary==2.9.13
+boto3==1.43.105
+python-dotenv==1.2.3
+redis==8.1.0
+pytest==9.1.1
