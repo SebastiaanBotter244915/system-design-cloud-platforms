@@ -1,0 +1,32 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    networks: [airbreda]
+
+  air-ingest:
+    image: airbreda-air
+    build:
+      context: .
+      dockerfile: Dockerfile.air
+    container_name: air-ingest
+    env_file: .env
+    ports: ["8000:8000"]    # GET /health
+    depends_on: [redis]
+    networks: [airbreda]
+
+  traffic-ingest:
+    image: airbreda-traffic
+    build:
+      context: .
+      dockerfile: Dockerfile.traffic
+    container_name: traffic-ingest
+    env_file: .env          # DB_* + AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, S3_BUCKET
+    volumes:
+      - ./airbreda/ndw:/app/ndw
+    ports: ["8001:8001"]    # GET /health
+    depends_on: [redis]
+    networks: [airbreda]
+
+networks:
+  airbreda:

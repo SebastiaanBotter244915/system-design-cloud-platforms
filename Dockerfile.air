@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Long-running loop: flush prints straight to `docker logs`
+ENV PYTHONUNBUFFERED=1
+
+# redis-cli, so `docker exec <container> redis-cli -h redis ping` works
+RUN apt-get update && apt-get install -y --no-install-recommends redis-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY airbreda/getNO2Readings.py .
+COPY airbreda/observability.py .
+COPY airbreda/ingest_air.py .
+
+CMD ["python", "ingest_air.py"]
