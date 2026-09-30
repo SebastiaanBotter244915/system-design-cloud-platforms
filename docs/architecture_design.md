@@ -2,7 +2,7 @@
 ## 1. Architecture diagram (Checkpoint 1)
 
 Captures the understanding at Checkpoint 1, kept for reference. The current
-system is in [Checkpoint 2](#2-architecture-diagram-checkpoint-2--patterns--resilience).
+system is in [Checkpoint 3](#3-architecture-diagram-checkpoint-3--datalab-state).
 Solid lines existed in the repo at the time. Dashed lines were designed but not yet built.
 
 ```mermaid
@@ -52,8 +52,9 @@ flowchart LR
 
 ## 2. Architecture diagram (Checkpoint 2 — Patterns & Resilience)
 
-What runs today: `docker compose up` starts three containers on one
-`airbreda` network, and the two ingestion services write to AWS.
+The local Day 2 setup, kept for reference: `docker compose up` starts three
+containers on one `airbreda` network, and the two ingestion services write
+to AWS. The deployed system is in [Checkpoint 3](#3-architecture-diagram-checkpoint-3--datalab-state).
 
 ```mermaid
 flowchart LR
@@ -174,3 +175,66 @@ Why the two sources are handled differently:
 - **Added:** the Redis queue, JSON logging, data-quality handlers and
   `/health` endpoints.
 
+## 3. Architecture diagram (Checkpoint 3 — DataLab State)
+
+What runs today: one EC2 VM runs both ingestion images on an hourly cron
+schedule, and each container writes straight to RDS and S3. The Day 2 queue
+is not deployed.
+
+```mermaid
+flowchart LR
+    subgraph ext["External open-data sources"]
+        LMN["Luchtmeetnet open API<br/>hourly NO2, station NL10240"]
+        NDW["NDW open data<br/>DATEX II XML, 4 A27 sites"]
+    end
+
+    DEV["Laptop<br/>ssh -i key.pem"]
+
+    subgraph aws["AWS, eu-west-1"]
+        subgraph ec2["EC2 t3.micro, Amazon Linux 2023<br/>SG: inbound SSH 22 from my IP only"]
+            CRON["cron, 0 * * * *<br/>docker run --rm --env-file .env"]
+            IA["airbreda-air<br/>ingest_air.py"]
+            IT["airbreda-traffic<br/>ingest_traffic.py"]
+            ENV[".env (gitignored)<br/>DB_* only, no AWS keys"]
+        end
+        ROLE{{"IAM instance role<br/>AmazonS3FullAccess<br/>temp credentials via instance metadata"}}
+        RDS[("RDS PostgreSQL<br/>sensor_readings<br/>SG: inbound 5432 from the VM")]
+        S3[("S3 airbreda-sebas-raw<br/>ndw/YYYY-MM-DD/HH-site.csv")]
+    end
+
+    Q[("Redis queue (Day 2)<br/>not part of this deployment")]
+
+    DEV -- "SSH 22" --> ec2
+    CRON --> IA
+    CRON --> IT
+    ENV -.-> IA
+    ENV -.-> IT
+    LMN -- "HTTPS GET" --> IA
+    NDW -- "HTTP GET *.xml.gz" --> IT
+    IA -- "TCP 5432, psycopg2 upsert" --> RDS
+    IT -- "TCP 5432, psycopg2 upsert" --> RDS
+    IT -- "HTTPS 443, boto3 PutObject" --> S3
+    ROLE -- "grants s3 write" --> IT
+    IA ~~~ Q
+
+    style Q stroke-dasharray: 5 5,opacity:0.5
+```
+
+### Changes since Checkpoint 2
+
+- **Laptop to VM:** the containers run on an EC2 instance instead of Docker
+  Desktop, so ingestion keeps going when the laptop is closed. Docker was
+  installed by hand (IaaS: the OS and runtime are ours to maintain).
+- **Scheduling:** cron starts a fresh container each hour (`--rm`) instead of
+  a long-running `docker compose` service. `docker-compose.yml` was not copied
+  to the VM.
+- **No queue:** ingestion writes directly to RDS and S3. With one VM, hourly
+  runs and no second consumer, a broker only adds something to run and
+  monitor. It comes back once there is more than one consumer or more than one VM.
+- **Credentials:** S3 access comes from the IAM instance role, not from AWS
+  keys copied into `.env`. The DB password lives only in the gitignored
+  `.env`, never in the `docker run` command or shell history.
+- **Network:** the RDS security group now allows the VM, not only my laptop's
+  IP. S3 is reached over HTTPS through the VM's public internet route.
+- **Open for Day 4:** narrow `AmazonS3FullAccess` to `s3:PutObject` on
+  `airbreda-sebas-raw/ndw/*`, and consider EventBridge Scheduler instead of cron.
