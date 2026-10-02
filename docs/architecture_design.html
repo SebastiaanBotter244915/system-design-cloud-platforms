@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirBreda Architecture Design</title>
+  <meta name="description" content="AirBreda architecture diagrams at four checkpoints, from the first plan to the full deployed system.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="index.html"><span class="logo">◎</span> AirBreda</a>
+    <div class="nav-links">
+      <a class="hide-sm" href="index.html">Overview</a>
+      <a class="hide-sm" href="architecture_descisions.html">Decisions</a>
+      <a class="hide-sm active" href="architecture_design.html">Design</a>
+      <a class="gh" href="https://github.com/SebastiaanBotter244915/system-design-cloud-platforms" aria-label="GitHub repository">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<header class="wrap page-hero">
+  <div class="crumbs"><a href="index.html">AirBreda</a> / Architecture Design</div>
+  <h1>Architecture <span>Design</span></h1>
+  <p class="lede">What AirBreda looks like at each checkpoint, from the first plan to the full deployed
+    system. Earlier checkpoints are kept for reference; the current system is
+    <a href="#checkpoint-4">Checkpoint 4</a>.</p>
+</header>
+
+<main class="wrap layout">
+
+  <aside class="toc">
+    <p class="toc-title">Checkpoints</p>
+    <a href="#checkpoint-1"><span class="num">CP1</span>First plan</a>
+    <a href="#checkpoint-2"><span class="num">CP2</span>Patterns &amp; Resilience</a>
+    <a href="#checkpoint-3"><span class="num">CP3</span>DataLab State</a>
+    <a href="#checkpoint-4"><span class="num">CP4</span>Full Architecture</a>
+  </aside>
+
+  <div>
+
+    <!-- Checkpoint 1 -->
+    <article class="entry" id="checkpoint-1">
+      <div class="entry-head"><span class="badge">CP 1</span><h2>First Plan</h2></div>
+
+      <p>Captures the understanding at Checkpoint 1, kept for reference. The current system is in
+        <a href="#checkpoint-4">Checkpoint 4</a>.</p>
+      <div class="legend"><span>existed in the repo at the time</span><span class="dash">designed but not yet built</span></div>
+
+      <figure class="diagram">
+        <div class="canvas"><img src="flowcharts/flowchart-1.svg" alt="Checkpoint 1: Luchtmeetnet and NDW feed two ingestion services in AWS, which write raw files to an S3 raw zone and parsed rows to RDS PostgreSQL, with S3 replay into RDS." loading="lazy"></div>
+        <figcaption><span>Checkpoint 1 — planned ingestion with a raw S3 zone</span><a href="flowcharts/flowchart-1.svg" target="_blank">Open full size ↗</a></figcaption>
+      </figure>
+
+      <h3>Components</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Component</th><th>Role</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td>Luchtmeetnet API</td><td>Source of NO₂ (and PM2.5, PM10, NO) for NL10240. Hourly averages stamped at the <em>end</em> of the hour. No API key; fair use is 100 req / 5 min.</td><td>External</td></tr>
+            <tr><td>NDW open data</td><td>Source of A27 traffic flow (veh/h) and speed (km/h). Full-country files, so only 4 site IDs are extracted.</td><td>External</td></tr>
+            <tr><td><code>ingest_air.py</code></td><td>Air-quality ingestion. Containerised by <code>Dockerfile.air</code> (image <code>airbreda-air</code>).</td><td>Built, see Checkpoint 2</td></tr>
+            <tr><td><code>ingest_traffic.py</code> (uses <code>getTrafficReadings.py</code>)</td><td>Traffic ingestion. Containerised by <code>Dockerfile.traffic</code> (image <code>airbreda-traffic</code>).</td><td>Built, see Checkpoint 2</td></tr>
+            <tr><td>S3 bucket</td><td>Archive of the per-site traffic CSVs.</td><td>Built for traffic only</td></tr>
+            <tr><td>RDS PostgreSQL</td><td>Stores cleaned, typed, deduplicated readings for querying and joining.</td><td>Built (single <code>sensor_readings</code> table)</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Planned data flow per run</h3>
+      <ol>
+        <li>Fetch from the source.</li>
+        <li>Write the untouched payload to S3 under a time-partitioned key, e.g.
+          <code>raw/luchtmeetnet/station=NL10240/date=2026-09-29/fetched_at=155242Z.json</code>.</li>
+        <li>Parse and validate, then upsert into PostgreSQL.</li>
+        <li>If step 3 fails, the raw file is still in S3 and can be replayed later.</li>
+      </ol>
+    </article>
+
+    <!-- Checkpoint 2 -->
+    <article class="entry" id="checkpoint-2">
+      <div class="entry-head"><span class="badge">CP 2</span><h2>Patterns &amp; Resilience</h2></div>
+
+      <p>The local Day 2 setup, kept for reference: <code>docker compose up</code> starts three containers on one
+        <code>airbreda</code> network, and the two ingestion services write to AWS. The deployed system is in
+        <a href="#checkpoint-4">Checkpoint 4</a>.</p>
+      <div class="legend"><span>built and has been run</span><span class="dash">planned</span></div>
+
+      <figure class="diagram">
+        <div class="canvas"><img src="flowcharts/flowchart-2.svg" alt="Checkpoint 2: Docker Compose stack with air-ingest, traffic-ingest, a Redis queue, data-quality handlers and SourceMonitor, writing to RDS and S3 and logging JSON to stdout." loading="lazy"></div>
+        <figcaption><span>Checkpoint 2 — Docker Compose stack with queue, logging and data-quality checks</span><a href="flowcharts/flowchart-2.svg" target="_blank">Open full size ↗</a></figcaption>
+      </figure>
+      <p>Solid lines are built and have been run. Dashed lines are planned: nothing consumes the queue yet, and the
+        dashboard is wired up in Day 4/5.</p>
+
+      <h3>Structured logging path</h3>
+      <p>Both scripts log through Python's <code>logging</code> module. <code>observability.py</code> formats every
+        record as one JSON object on stdout, adding <code>level</code> and <code>logged_at</code>, so
+        <code>docker logs</code> today (and a dashboard later) can filter on fields instead of parsing text.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Level</th><th>Event</th><th>Logged by</th><th>When</th></tr></thead>
+          <tbody>
+            <tr><td>INFO</td><td><code>fetch_success</code></td><td>air: per clean NO₂ reading; traffic: per clean site</td><td>Reading passed the data-quality check</td></tr>
+            <tr><td>INFO</td><td><code>db_write</code>, <code>redis_publish</code>, <code>s3_upload</code></td><td>both (S3: traffic only)</td><td>A sink write succeeded; includes row/message counts</td></tr>
+            <tr><td>INFO</td><td><code>db_write_skipped</code></td><td>traffic</td><td>Site had speed = -1, so no database write</td></tr>
+            <tr><td>WARNING</td><td><code>DATA_QUALITY_ERROR</code></td><td>both</td><td>Air: null or stale value. NDW: speed = -1</td></tr>
+            <tr><td>WARNING</td><td><code>fetch_empty</code></td><td>both</td><td>Source answered but returned no readings</td></tr>
+            <tr><td>ERROR</td><td><code>BAD_DATA_THRESHOLD_EXCEEDED</code></td><td>both, via <code>SourceMonitor</code></td><td>More than 10 bad readings for one source within an hour; logged once per breach</td></tr>
+            <tr><td>ERROR</td><td><code>fetch_failed</code>, <code>db_write_failed</code>, <code>redis_publish_failed</code>, <code>s3_upload_failed</code>, <code>run_failed</code></td><td>both</td><td>A source or sink failed. The poll loop keeps running</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Data-quality handler path</h3>
+      <figure class="diagram">
+        <div class="canvas"><img src="flowcharts/flowchart-3.svg" alt="Data-quality handler path: air readings that are null or stale are flagged and kept; NDW sites with a speed of -1 skip the database write; more than 10 bad readings in an hour logs BAD_DATA_THRESHOLD_EXCEEDED." loading="lazy" style="max-width: 560px; margin: 0 auto;"></div>
+        <figcaption><span>Per-reading data-quality checks for both sources</span><a href="flowcharts/flowchart-3.svg" target="_blank">Open full size ↗</a></figcaption>
+      </figure>
+      <p>Why the two sources are handled differently:</p>
+      <ul>
+        <li><b>Air readings are kept and flagged.</b> A gap in the NO₂ series is worse than a flagged value. The
+          analysis can exclude or impute flagged rows, but it can't recover a dropped hour. A value only looks stale
+          once its third repeat arrives, so the upsert also sets <code>is_flagged</code> on the earlier,
+          already-stored rows (it never clears it). Each reading is logged and counted once, even though every poll
+          fetches it again.</li>
+        <li><b>NDW -1 readings are skipped.</b> -1 is a sentinel meaning "no valid speed", not a measurement, and
+          storing it would corrupt averages. The site still goes to S3 and Redis, whose <code>avg_speed</code>
+          already excludes the -1 lanes. The next poll fetches a fresh reading, so a skipped hour costs less than a
+          missing air hour.</li>
+      </ul>
+
+      <h3>Changes since Checkpoint 1</h3>
+      <ul>
+        <li><b>One table, not two:</b> <code>sensor_readings</code> holds both sources (<code>component</code> =
+          <code>NO2</code>, <code>flow</code>, <code>speed</code>), with <code>is_flagged BOOLEAN DEFAULT FALSE</code>.
+          <code>station_id</code> was widened to <code>VARCHAR(40)</code> for the 27-character NDW site IDs.</li>
+        <li><b>Upserts differ by source:</b> air uses <code>ON CONFLICT ... DO UPDATE SET is_flagged = TRUE</code>
+          (only ever upgrades the flag), traffic uses <code>ON CONFLICT DO NOTHING</code>. Neither overwrites a
+          stored value.</li>
+        <li><b>S3 holds parsed CSVs, not raw payloads,</b> and only for traffic. The raw-zone design from
+          Checkpoint 1 (raw JSON / <code>.xml.gz</code>) isn't built yet.</li>
+        <li><b>Added:</b> the Redis queue, JSON logging, data-quality handlers and <code>/health</code>
+          endpoints.</li>
+      </ul>
+    </article>
+
+    <!-- Checkpoint 3 -->
+    <article class="entry" id="checkpoint-3">
+      <div class="entry-head"><span class="badge">CP 3</span><h2>DataLab State</h2></div>
+
+      <p>The Day 3 deployment, kept for reference: one EC2 VM runs both ingestion images on an hourly cron
+        schedule, and each container writes straight to RDS and S3. The Day 2 queue is not deployed. The full
+        system is in <a href="#checkpoint-4">Checkpoint 4</a>.</p>
+
+      <figure class="diagram">
+        <div class="canvas"><img src="flowcharts/flowchart-4.svg" alt="Checkpoint 3: an EC2 t3.micro runs cron and the two ingestion containers, which write to RDS over TCP 5432 and to S3 over HTTPS 443 using an IAM instance role; the Day 2 Redis queue is not part of the deployment." loading="lazy"></div>
+        <figcaption><span>Checkpoint 3 — ingestion deployed on one EC2 VM</span><a href="flowcharts/flowchart-4.svg" target="_blank">Open full size ↗</a></figcaption>
+      </figure>
+
+      <h3>Changes since Checkpoint 2</h3>
+      <ul>
+        <li><b>Laptop to VM:</b> the containers run on an EC2 instance instead of Docker Desktop, so ingestion keeps
+          going when the laptop is closed. Docker was installed by hand (IaaS: the OS and runtime are ours to
+          maintain).</li>
+        <li><b>Scheduling:</b> cron starts a fresh container each hour (<code>--rm</code>) instead of a long-running
+          <code>docker compose</code> service. <code>docker-compose.yml</code> was not copied to the VM.</li>
+        <li><b>No queue:</b> ingestion writes directly to RDS and S3. With one VM, hourly runs and no second
+          consumer, a broker only adds something to run and monitor. It comes back once there is more than one
+          consumer or more than one VM.</li>
+        <li><b>Credentials:</b> S3 access comes from the IAM instance role, not from AWS keys copied into
+          <code>.env</code>. The DB password lives only in the gitignored <code>.env</code>, never in the
+          <code>docker run</code> command or shell history.</li>
+        <li><b>Network:</b> the RDS security group now allows the VM, not only my laptop's IP. S3 is reached over
+          HTTPS through the VM's public internet route.</li>
+      </ul>
+    </article>
+
+    <!-- Checkpoint 4 -->
+    <article class="entry" id="checkpoint-4">
+      <div class="entry-head"><span class="badge">CP 4</span><h2>Full AirBreda Architecture</h2><span class="tag">current</span></div>
+
+      <p>The complete system: three containers on one EC2 VM. The two ingestion jobs fill RDS and S3 every hour,
+        and the dashboard reads both back and adds a prediction from the model baked into its image. The same three
+        images also run on-prem with <code>docker compose up</code> (see <a href="#local-mirror">Local mirror</a>).</p>
+      <div class="legend"><span>every hour / every request</span><span class="dash">only when the model is retrained</span></div>
+
+      <figure class="diagram">
+        <div class="canvas"><img src="flowcharts/flowchart-5.svg" alt="Checkpoint 4: one EC2 VM runs cron-started air and traffic ingestion plus an always-on dashboard container with model.pkl inside; ingestion writes to RDS and S3, the dashboard reads both and serves browsers on port 8080." loading="lazy"></div>
+        <figcaption><span>Checkpoint 4 — the full system with dashboard and model</span><a href="flowcharts/flowchart-5.svg" target="_blank">Open full size ↗</a></figcaption>
+      </figure>
+      <p>Solid lines run every hour (ingestion) or on every request (dashboard). The dashed line runs only when the
+        model is retrained, which is a manual step.</p>
+
+      <h3>Components</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Component</th><th>Role</th><th>Runs as</th></tr></thead>
+          <tbody>
+            <tr><td><code>airbreda-air</code></td><td>Fetches NO₂ for NL10240, flags null/stale values, upserts into RDS.</td><td>cron at :00, <code>--rm</code>, 150 MB cap</td></tr>
+            <tr><td><code>airbreda-traffic</code></td><td>Downloads the NDW file, extracts the 4 A27 sites, upserts into RDS and uploads one CSV per site to S3.</td><td>cron at :05, <code>--rm</code>, 150 MB cap</td></tr>
+            <tr><td><code>airbreda-dashboard</code></td><td><code>/site/{id}</code> combines the latest NO₂ (RDS), the site's latest intensity (S3) and <code>predict()</code>. <code>/</code> is an HTML page that calls <code>/site/{id}</code> for each site.</td><td><code>-d --restart unless-stopped</code>, port 8080</td></tr>
+            <tr><td><code>model.pkl</code></td><td>LinearRegression on <code>total_intensity_veh_per_hr</code> + <code>hour_of_day</code>. Risk is a sigmoid around 40 µg/m³ (<a href="architecture_descisions.html#adr-006">ADR-006</a>).</td><td>Read-only file inside the dashboard image</td></tr>
+            <tr><td>RDS PostgreSQL</td><td>Source of truth for parsed readings (<code>sensor_readings</code>, <code>is_flagged</code>).</td><td>Managed, SG allows only the VM</td></tr>
+            <tr><td>S3 bucket</td><td>Per-site traffic CSVs. Written by traffic ingestion, read by the dashboard.</td><td>Managed, reached via the instance role</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Where the model lives and how the dashboard uses it</h3>
+      <ol>
+        <li><b>Train offline (laptop):</b> <code>build_training_data.py</code> joins NO₂ from RDS with traffic from
+          S3 into <code>training_data.csv</code>. <code>predict.py</code> fits the model and writes
+          <code>model/model.pkl</code>. <code>evaluate.py</code> and <code>tests/test_model.py</code> check it.</li>
+        <li><b>Bake into the image:</b> <code>Dockerfile.dashboard</code> copies <code>model.pkl</code> next to
+          <code>predict.py</code>, so the model and the code that builds its features ship (and roll back) as one
+          image.</li>
+        <li><b>Serve:</b> on each <code>/site/{id}</code> request, the dashboard rounds the S3 timestamp to the hour
+          in UTC, calls <code>predict()</code> and adds <code>no2_ug_m3_predicted</code> and
+          <code>no2_exceedance_risk</code> to the response. If <code>predict()</code> fails, both fields are
+          <code>null</code> and the measured values are still returned.</li>
+      </ol>
+
+      <h3 id="local-mirror">Local mirror (Docker Compose)</h3>
+      <p><code>docker compose up</code> runs the same three images on the <code>airbreda</code> network, plus the
+        Day 2 Redis queue, against the same RDS and S3. The differences from the VM: the ingest services poll in a
+        loop instead of being started by cron (so the dashboard's <code>/health</code> can reach them by service
+        name), S3 access comes from AWS keys in <code>.env</code> instead of the instance role, and the dashboard
+        is on <code>localhost:8080</code>.</p>
+
+      <h3>Changes since Checkpoint 3</h3>
+      <ul>
+        <li><b>Added the dashboard container</b> on the same VM (<a href="architecture_descisions.html#adr-005">ADR-005</a>),
+          with port 8080 opened in the security group. It's the first long-running process on the VM.</li>
+        <li><b>Added the model:</b> trained offline, baked into the dashboard image, served through
+          <code>predict()</code> (<a href="architecture_descisions.html#adr-006">ADR-006</a>).</li>
+        <li><b>Memory:</b> the 1 GB VM ran out of memory with three Python containers. Ingestion is now capped and
+          staggered (:00 / :05), and a 2 GB swap file was added after the cap alone didn't stop the processes being
+          killed.</li>
+        <li><b>Still open:</b> S3 holds parsed CSVs rather than raw payloads
+          (<a href="architecture_descisions.html#adr-001">ADR-001</a>), the ingest containers' <code>/health</code>
+          isn't reachable on the VM because they exit after each run, and the single VM doesn't yet meet
+          <a href="architecture_descisions.html#adr-003">ADR-003</a>'s Warm Standby.</li>
+      </ul>
+    </article>
+
+    <div class="pager">
+      <a href="architecture_descisions.html"><small>← Previous</small>Architecture Decisions</a>
+      <a class="next" href="index.html"><small>Back to →</small>Overview</a>
+    </div>
+
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">AirBreda · Cloud System Design elective · Open data from RIVM Luchtmeetnet &amp; NDW</div>
+</footer>
+
+<script>
+  // Highlight the checkpoint that is currently in view in the side navigation.
+  const links = [...document.querySelectorAll(".toc a")];
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(a => a.classList.toggle("on", a.getAttribute("href") === "#" + e.target.id));
+      }
+    });
+  }, { rootMargin: "-20% 0px -70% 0px" });
+  document.querySelectorAll(".entry").forEach(el => observer.observe(el));
+</script>
+
+</body>
+</html>

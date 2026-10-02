@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirBreda Architecture Decisions</title>
+  <meta name="description" content="The six Architecture Decision Records behind AirBreda: storage, messaging, resilience, compute, deployment and ML serving.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="index.html"><span class="logo">◎</span> AirBreda</a>
+    <div class="nav-links">
+      <a class="hide-sm" href="index.html">Overview</a>
+      <a class="hide-sm active" href="architecture_descisions.html">Decisions</a>
+      <a class="hide-sm" href="architecture_design.html">Design</a>
+      <a class="gh" href="https://github.com/SebastiaanBotter244915/system-design-cloud-platforms" aria-label="GitHub repository">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<header class="wrap page-hero">
+  <div class="crumbs"><a href="index.html">AirBreda</a> / Architecture Decisions</div>
+  <h1>Architecture <span>Decisions</span></h1>
+  <p class="lede">Six ADRs that explain <em>why</em> AirBreda looks the way it does. Each one gives
+    the context, the decision, the alternatives and the trade-offs.</p>
+</header>
+
+<main class="wrap layout">
+
+  <aside class="toc">
+    <p class="toc-title">Records</p>
+    <a href="#adr-001"><span class="num">001</span>Data Storage</a>
+    <a href="#adr-002"><span class="num">002</span>Messaging</a>
+    <a href="#adr-003"><span class="num">003</span>Resilience</a>
+    <a href="#adr-004"><span class="num">004</span>Compute</a>
+    <a href="#adr-005"><span class="num">005</span>Deployment</a>
+    <a href="#adr-006"><span class="num">006</span>ML Serving</a>
+  </aside>
+
+  <div>
+
+    <!-- ADR-001 -->
+    <article class="entry" id="adr-001">
+      <div class="entry-head"><span class="badge">ADR-001</span><h2>Initial Data Storage Strategy</h2></div>
+
+      <div class="callout"><span class="label">Context</span>
+        Both sources produce small, structured time series: hourly NO₂ from Luchtmeetnet and per-minute
+        traffic from NDW. The main query joins the two on time.</div>
+      <div class="callout decision"><span class="label">Decision</span>
+        Keep raw payloads in <b>Amazon S3</b> and parsed readings in <b>Amazon RDS for PostgreSQL</b>.</div>
+
+      <h3>Why relational (PostgreSQL) instead of NoSQL</h3>
+      <ul>
+        <li>Fixed, known schema (station, component, timestamp, value), so a flexible schema adds nothing.</li>
+        <li>The workload is SQL-shaped: join air and traffic on time and aggregate 1-minute traffic into hours.</li>
+        <li>At thousands of rows per day, NoSQL's horizontal scaling isn't needed.</li>
+      </ul>
+
+      <h3>Why raw files are stored in object storage</h3>
+      <ul>
+        <li><b>Replay:</b> parsing logic will change, and NDW only serves current data, so S3 is the only way
+          to rebuild the database after a fix.</li>
+        <li><b>Cost:</b> large, write-once blobs are cheap in S3 and would bloat PostgreSQL.</li>
+      </ul>
+
+      <h3>How duplicate readings are handled</h3>
+      <ul>
+        <li>Delivery is <b>at-least-once</b>. Luchtmeetnet returns the same latest hour on every call, and runs
+          can be retried.</li>
+        <li>Writes upsert on <code>UNIQUE (station_id, component, timestamp_measured)</code> with
+          <code>INSERT ... ON CONFLICT DO UPDATE</code>, so a duplicate leaves the value unchanged. Exactly-once
+          delivery was rejected as over-engineering: the idempotent write makes duplicates harmless.</li>
+      </ul>
+
+      <h3>Alternative considered and rejected</h3>
+      <ul>
+        <li>Storing raw payloads in PostgreSQL (<code>JSONB</code>/<code>bytea</code>). It would be simpler, but
+          NDW files are large and would bloat storage and backups.</li>
+      </ul>
+
+      <h3>Reflection</h3>
+      <div class="callout reflect"><span class="label">What architectural decision from today would you be least confident defending in a design review?</span>
+        Storing raw payloads in S3 for replay. It's the main argument for the bucket, but what's actually built
+        stores parsed traffic CSVs and nothing for air. If the parser has a bug, the CSVs carry the same bug, so
+        the database can't really be rebuilt from S3 yet. Until the raw <code>.xml.gz</code> and JSON are
+        archived as received, that promise isn't kept.</div>
+    </article>
+
+    <!-- ADR-002 -->
+    <article class="entry" id="adr-002">
+      <div class="entry-head"><span class="badge">ADR-002</span><h2>Messaging Architecture</h2></div>
+
+      <div class="callout"><span class="label">Context</span>
+        Both ingestion services produce readings that more than one consumer may need: the database today,
+        and later an ML model, an anomaly detector or a dashboard.</div>
+      <div class="callout decision"><span class="label">Decision</span>
+        Each service publishes every reading to a shared <b>Redis</b> list (<code>readings</code>), alongside
+        its direct database write.</div>
+
+      <h3>Why a queue instead of only direct database writes</h3>
+      <ul>
+        <li>It decouples the ingestion scripts from whoever consumes the data. A new consumer just reads the
+          queue, so the ingestion code doesn't need to know about it or be changed to add it.</li>
+      </ul>
+
+      <h3>Why Redis (over SQS or Service Bus)</h3>
+      <ul>
+        <li>It runs as a single container next to the existing services with zero cloud setup, which is ideal
+          for learning the queue pattern itself.</li>
+        <li>If the project grew, I'd evaluate SQS or Service Bus: a managed broker adds durability and
+          monitoring that Redis doesn't give you out of the box.</li>
+      </ul>
+
+      <h3>What happens if the broker goes down</h3>
+      <ul>
+        <li>The database write still succeeds, because the DB and Redis writes are separate try/except blocks.
+          No data is lost at the source of truth.</li>
+        <li>Messages meant for Redis during the outage are permanently dropped: there is no retry or replay once
+          it recovers.</li>
+        <li>Structured logging (<code>redis_publish_failed</code>, ERROR) at least makes the failure visible
+          rather than silent.</li>
+      </ul>
+
+      <h3>Bad data: flag-and-keep (Luchtmeetnet) vs drop (NDW)</h3>
+      <ul>
+        <li>A NO₂ null is a real timestamp with missing data, so flagging it (<code>is_flagged = TRUE</code>)
+          and keeping it avoids gaps in the series.</li>
+        <li>NDW's -1 is a sentinel that would corrupt averages, so that row is dropped.</li>
+        <li>Starting over, I'd consider flag-and-keep for NDW too, since dropping still leaves the same gap
+          problem.</li>
+      </ul>
+    </article>
+
+    <!-- ADR-003 -->
+    <article class="entry" id="adr-003">
+      <div class="entry-head"><span class="badge">ADR-003</span><h2>Resilience Strategy</h2></div>
+
+      <div class="callout"><span class="label">Context</span>
+        AirBreda will serve readings per site through a <code>/site/{id}</code> endpoint (not built yet). The
+        data is hourly, so short outages cost little, but the dashboard should be reliably available.</div>
+      <div class="callout decision"><span class="label">Decision</span>
+        An SLO of <b>99.5%</b> for <code>/site/{id}</code>, backed by a <b>Warm Standby</b> DR tier.</div>
+
+      <h3>SLO: 99.5%</h3>
+      <ul>
+        <li>That allows about 3.6 hours of downtime per month. Readings only change hourly, so the stricter
+          99.9% (about 43 minutes a month) would cost more than it's worth.</li>
+      </ul>
+
+      <h3>DR tier: Warm Standby</h3>
+      <ul>
+        <li>An air-quality dashboard does not need Active-Active. A Warm Standby with a <b>15-minute RTO</b> and
+          <b>1-hour RPO</b> is sufficient and cost-justifiable.</li>
+        <li>A 1-hour RPO matches the hourly polling: at worst, one poll is lost.</li>
+      </ul>
+
+      <h3>Cost versus the next tier up (Active-Active)</h3>
+      <ul>
+        <li>Warm Standby only pays for a scaled-down duplicate, scaled up on failover.</li>
+        <li>Active-Active runs full capacity in two regions permanently, so it costs roughly double.</li>
+      </ul>
+    </article>
+
+    <!-- ADR-004 -->
+    <article class="entry" id="adr-004">
+      <div class="entry-head"><span class="badge">ADR-004</span><h2>Compute Strategy</h2></div>
+
+      <div class="callout"><span class="label">Context</span>
+        Ingestion has to keep running when my laptop is closed. Today that's two short hourly jobs for one
+        corridor.</div>
+      <div class="callout decision"><span class="label">Decision</span>
+        Run both images on one <b>EC2 t3.micro</b> (eu-west-1), started hourly by cron with
+        <code>docker run --rm</code>.</div>
+
+      <h3>Why a VM instead of a managed container service</h3>
+      <ul>
+        <li>The images already run with plain <code>docker run</code>, so there's no ECR, task definition or
+          cluster to set up first.</li>
+        <li>Two short jobs an hour don't need orchestration or autoscaling.</li>
+        <li>The trade-off is that the OS, Docker and cron are mine to maintain, and if the VM dies both jobs
+          stop.</li>
+      </ul>
+
+      <h3>Cost</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Item</th><th class="r">Per month</th></tr></thead>
+          <tbody>
+            <tr><td>t3.micro (on-demand, 730 h)</td><td class="r">$8.32</td></tr>
+            <tr><td>8 GB gp3 volume</td><td class="r">$0.70</td></tr>
+            <tr><td>Public IPv4 address</td><td class="r">$3.65</td></tr>
+            <tr><td><b>Total</b></td><td class="r"><b>≈ $12.70</b></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The VM is idle about 58 minutes every hour.</p>
+
+      <h3>At 50 corridors every 5 minutes</h3>
+      <ul>
+        <li>Switch to <b>ECS Fargate tasks started by EventBridge Scheduler</b>: billed per run, no OS to patch,
+          failed runs visible in CloudWatch.</li>
+        <li>The NDW file covers the whole country, so one task downloads it and puts one message per corridor on
+          <b>SQS</b> for a pool of parser workers.</li>
+      </ul>
+
+      <h3>Operational concern I hadn't anticipated</h3>
+      <ul>
+        <li>The RDS security group only allowed my laptop's IP, so the VM timed out on port 5432 even though the
+          same image worked locally. Fixed by allowing the VM's security group instead of an IP.</li>
+      </ul>
+
+      <h3>Why the Redis queue (ADR-002) was dropped</h3>
+      <ul>
+        <li>Nothing consumes it yet, and on one VM it's just another container competing for 1 GB of RAM, with
+          no durability.</li>
+      </ul>
+    </article>
+
+    <!-- ADR-005 -->
+    <article class="entry" id="adr-005">
+      <div class="entry-head"><span class="badge">ADR-005</span><h2>Compute &amp; Deployment Strategy</h2></div>
+
+      <div class="callout"><span class="label">Context</span>
+        Day 5 adds a third image: the dashboard (<code>/site/{id}</code>, <code>/health</code> and an HTML
+        page). Unlike the two ingest jobs it's a long-running web server, not a job that runs for a minute and
+        exits.</div>
+      <div class="callout decision"><span class="label">Decision</span>
+        Run the dashboard as a <b>third container on the same EC2 t3.micro</b>, started with
+        <code>docker run -d --restart unless-stopped -p 8080:8000</code>.</div>
+
+      <h3>Why the same VM instead of a managed container service</h3>
+      <ul>
+        <li>It's one small FastAPI process serving one interchange to a handful of users. The VM is idle about
+          58 minutes every hour, so it has room.</li>
+        <li>No extra cost: still about <b>$12.70/month</b>. A Fargate service plus a load balancer would add
+          roughly $25–30/month for the same single container.</li>
+        <li>The image runs exactly like the other two, so the deploy is the same <code>docker build</code> /
+          <code>docker run</code> I already know.</li>
+        <li><b>What would change my mind:</b> the 99.5% SLO from ADR-003 actually being missed, needing HTTPS or
+          more than one instance (then <b>ECS Fargate behind an ALB</b>, or App Runner), or the 1 GB of RAM
+          running out once more corridors are added.</li>
+      </ul>
+
+      <h3>How it runs long-term, and what happens on a reboot</h3>
+      <ul>
+        <li><code>--restart unless-stopped</code> restarts the container if it crashes, and the Docker daemon is
+          enabled at boot (<code>systemctl enable docker</code>), so after a VM reboot the dashboard comes back on
+          its own. The cron jobs survive too, because the crontab is stored on disk.</li>
+        <li>I chose the restart policy over a systemd unit: it's one flag instead of a unit file, and Docker
+          already runs under systemd.</li>
+        <li>The trade-off: nothing pulls a newer image. Deploying is still a manual <code>docker stop</code>,
+          <code>docker rm</code> and <code>docker run</code> on the VM.</li>
+      </ul>
+
+      <h3>What testing locally with Compose caught</h3>
+      <ul>
+        <li><b>A port clash:</b> air-ingest's <code>/health</code> already uses host port 8000, so the dashboard
+          is mapped to <b>8080</b>. That port also had to be opened in the VM's security group.</li>
+        <li><b>The model path:</b> <code>predict.py</code> loads <code>model/model.pkl</code> relative to itself,
+          so the Dockerfile has to copy the pickle into <code>model/</code>, not next to the script.</li>
+        <li><b>What it didn't catch:</b> in Compose the ingest containers stay up, so <code>/health</code> can
+          reach them by service name. On the VM they're <code>--rm</code> cron jobs, so most of the time the
+          dashboard's <code>/health</code> reports them as unreachable.</li>
+      </ul>
+
+      <h3>Operational concern: 1 GB of RAM</h3>
+      <ul>
+        <li>With three Python containers, the t3.micro ran out of memory and the kernel kept killing processes
+          (confirmed in the instance's system log).</li>
+        <li>First fix: cap the ingest containers (<code>--memory="150m"</code>) and stagger them in cron (:00 and
+          :05). It didn't hold: the log still showed processes growing past 470 MB and being killed, so the cap
+          wasn't actually enforced.</li>
+        <li>Final fix: a <b>2 GB swap file</b>. A memory spike now means a slowdown instead of a kill, with
+          <code>--restart unless-stopped</code> as a second line of defence. This is the first sign the VM is
+          getting too small.</li>
+      </ul>
+
+      <h3>Supersedes or extends ADR-004?</h3>
+      <ul>
+        <li>It <b>extends</b> ADR-004. Same VM, same region, same plain <code>docker run</code>, no
+          orchestrator.</li>
+        <li>What actually changed: the VM is no longer just a cron host. It now has an always-on process, an
+          inbound port open to the internet, and less free memory. "If the VM dies, both jobs stop" now also
+          means the dashboard goes down, which doesn't fit ADR-003's Warm Standby yet.</li>
+      </ul>
+    </article>
+
+    <!-- ADR-006 -->
+    <article class="entry" id="adr-006">
+      <div class="entry-head"><span class="badge">ADR-006</span><h2>ML Serving Architecture</h2></div>
+
+      <div class="callout"><span class="label">Context</span>
+        The dashboard needs a predicted NO₂ value and a <code>no2_exceedance_risk</code> between 0 and 1 for
+        each of the four NDW sites. The training set (<code>training_data.csv</code>) has <b>6 hourly rows</b>
+        so far.</div>
+      <div class="callout decision"><span class="label">Decision</span>
+        A <b>LinearRegression</b> on <code>total_intensity_veh_per_hr</code> and <code>hour_of_day</code>,
+        trained offline (<code>predict.py</code>), saved as <code>model.pkl</code> and <b>baked into the
+        dashboard image</b>. Risk is a sigmoid on its prediction.</div>
+
+      <h3>Why a linear regression is enough model</h3>
+      <ul>
+        <li>6 rows and 2 features. Anything more flexible (trees, boosting) would memorise the six points rather
+          than learn from them.</li>
+        <li>Plotting NO₂ against total intensity (<code>plots/</code>) doesn't show a linear relationship at all.
+          With 6 points that's most likely too little data or plain noise, so it neither confirms nor rules out a
+          linear model.</li>
+        <li><b>What would change that:</b> a few hundred hours (weeks of data) to add features like weekday and
+          wind, which drive NO₂ more than traffic does. A non-linear model only makes sense with a few thousand
+          hours (several months, covering seasons), and only if it beats the regression on CV.</li>
+      </ul>
+
+      <h3>Evaluation: what the numbers do and don't tell me <code>evaluate.py</code></h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Leave-one-out CV</th><th class="r">R²</th><th class="r">MAE (µg/m³)</th></tr></thead>
+          <tbody>
+            <tr><td><b>LinearRegression</b></td><td class="r"><b>0.42</b></td><td class="r"><b>6.6</b></td></tr>
+            <tr><td>Baseline: always predict the mean</td><td class="r">−0.44</td><td class="r">10.3</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li><b>What they do tell me:</b> the model picks up <em>some</em> structure, since it beats a constant
+          prediction.</li>
+        <li><b>What they don't:</b> with 6 points and 3 fitted parameters there are hardly any degrees of freedom
+          left. The numbers say nothing about other seasons, weekdays or hours outside 12:00–20:00.</li>
+        <li>The coefficients are unreliable. Intensity and hour are almost collinear (r = −0.97), so their
+          effects can't be separated: hour's coefficient (−3.55) even has the opposite sign of its own
+          correlation with NO₂ (+0.77). I don't read them causally; more data across a wider range of hours and
+          traffic levels should stabilise them.</li>
+      </ul>
+
+      <h3>How risk is derived: threshold 40 µg/m³</h3>
+      <ul>
+        <li>40 µg/m³ is the EU annual limit value (and the old WHO 2005 guideline). The WHO 2021 guideline is
+          much stricter: 10 µg/m³ annual, 25 µg/m³ daily.</li>
+        <li>These are <b>annual / daily averages</b>, and I'm applying them to <b>hourly</b> values. A single
+          hour above 40 isn't a legal exceedance; the EU hourly limit is 200 µg/m³. So "risk" here means "this
+          hour is high for this interchange", not "a limit is being broken".</li>
+        <li>WHO's 10 or 25 would flag every hour I've measured (26–51 µg/m³), so it wouldn't tell hours apart.
+          40 splits my data (2 of 6 hours above).</li>
+      </ul>
+      <div class="callout decision"><span class="label">Risk formula</span>
+        Sigmoid centred on 40 with steepness 0.2, applied to the regression's prediction
+        (<code>predict.py</code>).</div>
+
+      <h3>Stretch: LogisticRegression on a binary "&gt; 40" label <code>compare_risk.py</code></h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th class="r">veh/hr</th><th class="r">hour</th><th class="r">actual NO₂</th><th class="c">exceeded</th><th class="r">predicted NO₂</th><th class="r">sigmoid risk</th><th class="r">logistic risk</th></tr></thead>
+          <tbody>
+            <tr><td class="r">2640</td><td class="r">18</td><td class="r">36.9</td><td class="c">no</td><td class="r">35.2</td><td class="r">0.28</td><td class="r">0.16</td></tr>
+            <tr><td class="r">1620</td><td class="r">20</td><td class="r">37.3</td><td class="c">no</td><td class="r">44.0</td><td class="r">0.69</td><td class="r">0.54</td></tr>
+            <tr><td class="r">4590</td><td class="r">12</td><td class="r">25.9</td><td class="c">no</td><td class="r">26.1</td><td class="r">0.06</td><td class="r">0.02</td></tr>
+            <tr><td class="r">2220</td><td class="r">18</td><td class="r">50.8</td><td class="c yes">yes</td><td class="r">41.8</td><td class="r">0.59</td><td class="r">0.40</td></tr>
+            <tr><td class="r">1320</td><td class="r">19</td><td class="r">51.1</td><td class="c yes">yes</td><td class="r">52.2</td><td class="r">0.92</td><td class="r">0.85</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <ul>
+        <li>Both rank the hours the same way and both get the 20:00 row wrong (no exceedance, ~0.5–0.7 risk).</li>
+        <li>The logistic model is more cautious, but it's trained on <b>2 positive examples</b>. Its
+          probabilities aren't really calibrated, and with so few positives it can't learn much.</li>
+        <li><b>I trust the sigmoid-on-regression more for now.</b> The regression uses the actual NO₂ value of
+          every row, not just above/below, so it gets more information from 6 rows. It's also one model to
+          maintain, and the risk is easy to explain ("predicted 44, threshold 40"). The trade-off: steepness 0.2
+          is a guess, not learned from data.</li>
+        <li>Revisit once there are weeks of hourly data with enough exceedances to train and calibrate a
+          classifier.</li>
+      </ul>
+
+      <h3>Training-serving skew, and why the model is baked into the image</h3>
+      <ul>
+        <li>Skew means the model sees different inputs live than it saw in training. For example,
+          <code>hour_of_day</code> in local time instead of UTC, or a reading that isn't rounded to the hour. The
+          dashboard rounds the S3 timestamp in UTC the same way <code>build_training_data.py</code> does, to avoid
+          this.</li>
+        <li><b>There is one real skew today:</b> the model was trained on the <b>total</b> of the four sites, but
+          <code>/site/{id}</code> passes in <b>one</b> site's intensity. A single site's flow (300–2,000 veh/hr)
+          is often below the lowest total the model has seen (1,320), so per-site predictions are extrapolations.
+          Fix: pass the total, or retrain per site.</li>
+        <li>Baking <code>model.pkl</code> into the image means the model, the feature code in
+          <code>predict.py</code> and the pinned library versions ship and roll back together as one image tag.
+          Retraining live on the VM could silently produce a different model than the one
+          <code>evaluate.py</code> and <code>tests/test_model.py</code> checked, trained on whatever the database
+          held at that moment.</li>
+        <li>One remaining risk: the pickle was made with scikit-learn 1.9.0 locally, but the image pins 1.9.1. It
+          should be trained inside the same image.</li>
+      </ul>
+
+      <h3>Why one air-quality station (NL10240) is enough</h3>
+      <ul>
+        <li>All four NDW sites (<code>hrl</code>, <code>hrr</code>, <code>vwd</code>, <code>vwa</code>) are lanes
+          and ramps of the <b>same A27 interchange</b>, a few hundred metres apart, and NL10240 sits next to it.
+          The station measures the air those four sites create together, so it isn't standing in for somewhere it
+          can't see.</li>
+        <li>That's also why the model uses their <b>total</b> intensity: one NO₂ reading can't tell which ramp it
+          came from.</li>
+        <li><b>What would force a second station:</b> a second interchange far enough away that its air isn't
+          what NL10240 measures (a different road, or a different wind exposure). It would need its own station,
+          training rows and model, otherwise its predictions are made from another place's air.</li>
+      </ul>
+
+      <h3>What <code>/site/{id}</code> returns if <code>predict()</code> fails</h3>
+      <ul>
+        <li>The request still returns <b>200</b> with the real <code>no2_ug_m3</code> and
+          <code>intensity_veh_per_hr</code>. Only <code>no2_ug_m3_predicted</code> and
+          <code>no2_exceedance_risk</code> are <code>null</code>, which the page shows as "–".</li>
+        <li>I chose this over a 500 because the measured values are the more important part, and they're fine: a
+          broken model shouldn't take the real readings down with it, and it would count against the 99.5%
+          SLO.</li>
+        <li>The trade-off: a <code>null</code> is easy to miss. The exception is swallowed without a log line, so
+          it should log a <code>predict_failed</code> error the same way ingestion logs
+          <code>redis_publish_failed</code>.</li>
+      </ul>
+    </article>
+
+    <div class="pager">
+      <a href="index.html"><small>← Back</small>Overview</a>
+      <a class="next" href="architecture_design.html"><small>Next →</small>Architecture Design</a>
+    </div>
+
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">AirBreda · Cloud System Design elective · Open data from RIVM Luchtmeetnet &amp; NDW</div>
+</footer>
+
+<script>
+  // Highlight the record that is currently in view in the side navigation.
+  const links = [...document.querySelectorAll(".toc a")];
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        links.forEach(a => a.classList.toggle("on", a.getAttribute("href") === "#" + e.target.id));
+      }
+    });
+  }, { rootMargin: "-20% 0px -70% 0px" });
+  document.querySelectorAll(".entry").forEach(el => observer.observe(el));
+</script>
+
+</body>
+</html>

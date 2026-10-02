@@ -2,7 +2,7 @@
 ## 1. Architecture diagram (Checkpoint 1)
 
 Captures the understanding at Checkpoint 1, kept for reference. The current
-system is in [Checkpoint 3](#3-architecture-diagram-checkpoint-3--datalab-state).
+system is in [Checkpoint 4](#4-architecture-diagram-checkpoint-4--full-airbreda-architecture).
 Solid lines existed in the repo at the time. Dashed lines were designed but not yet built.
 
 ```mermaid
@@ -54,7 +54,7 @@ flowchart LR
 
 The local Day 2 setup, kept for reference: `docker compose up` starts three
 containers on one `airbreda` network, and the two ingestion services write
-to AWS. The deployed system is in [Checkpoint 3](#3-architecture-diagram-checkpoint-3--datalab-state).
+to AWS. The deployed system is in [Checkpoint 4](#4-architecture-diagram-checkpoint-4--full-airbreda-architecture).
 
 ```mermaid
 flowchart LR
@@ -177,9 +177,10 @@ Why the two sources are handled differently:
 
 ## 3. Architecture diagram (Checkpoint 3 — DataLab State)
 
-What runs today: one EC2 VM runs both ingestion images on an hourly cron
-schedule, and each container writes straight to RDS and S3. The Day 2 queue
-is not deployed.
+The Day 3 deployment, kept for reference: one EC2 VM runs both ingestion
+images on an hourly cron schedule, and each container writes straight to RDS
+and S3. The Day 2 queue is not deployed. The full system is in
+[Checkpoint 4](#4-architecture-diagram-checkpoint-4--full-airbreda-architecture).
 
 ```mermaid
 flowchart LR
@@ -236,5 +237,111 @@ flowchart LR
   `.env`, never in the `docker run` command or shell history.
 - **Network:** the RDS security group now allows the VM, not only my laptop's
   IP. S3 is reached over HTTPS through the VM's public internet route.
-- **Open for Day 4:** narrow `AmazonS3FullAccess` to `s3:PutObject` on
-  `airbreda-sebas-raw/ndw/*`, and consider EventBridge Scheduler instead of cron.
+
+## 4. Architecture diagram (Checkpoint 4 — Full AirBreda Architecture)
+
+The complete system: three containers on one EC2 VM. The two ingestion jobs
+fill RDS and S3 every hour, and the dashboard reads both back and adds a
+prediction from the model baked into its image. The same three images also
+run on-prem with `docker compose up` (see [Local mirror](#local-mirror-docker-compose)).
+
+```mermaid
+flowchart LR
+    subgraph ext["External open-data sources"]
+        LMN["Luchtmeetnet open API<br/>hourly NO2, station NL10240"]
+        NDW["NDW open data<br/>DATEX II XML, 4 A27 sites"]
+    end
+
+    USER["Browser<br/>GET / and /site/{id}"]
+    DEV["Laptop<br/>ssh -i key.pem<br/>trains model offline"]
+
+    subgraph aws["AWS, eu-west-1"]
+        subgraph ec2["EC2 t3.micro, Amazon Linux 2023, 1 GB RAM + 2 GB swap<br/>SG: inbound SSH 22 from my IP, 8080 for the dashboard"]
+            CRON["cron<br/>:00 air, :05 traffic<br/>docker run --rm --memory=150m"]
+            IA["airbreda-air<br/>ingest_air.py"]
+            IT["airbreda-traffic<br/>ingest_traffic.py"]
+            subgraph dimg["airbreda-dashboard, docker run -d --restart unless-stopped"]
+                DB["dashboard.py (FastAPI)<br/>/site/{id}, /health, /"]
+                MODEL[("model/model.pkl<br/>LinearRegression<br/>+ sigmoid risk (predict.py)")]
+            end
+            ENV[".env (gitignored)<br/>DB_* only, no AWS keys"]
+        end
+        ROLE{{"IAM instance role, narrowed<br/>s3:PutObject + s3:GetObject on ndw/*<br/>s3:ListBucket, prefix ndw/"}}
+        RDS[("RDS PostgreSQL<br/>sensor_readings<br/>SG: inbound 5432 from the VM")]
+        S3[("S3 airbreda-sebas-raw<br/>ndw/YYYY-MM-DD/HH-site.csv")]
+    end
+
+    LMN -- "HTTPS GET" --> IA
+    NDW -- "HTTP GET *.xml.gz" --> IT
+    CRON --> IA
+    CRON --> IT
+    ENV -.-> IA
+    ENV -.-> IT
+    ENV -.-> DB
+
+    IA -- "upsert NO2 rows" --> RDS
+    IT -- "upsert flow + speed rows" --> RDS
+    IT -- "PutObject per-site CSV" --> S3
+
+    RDS -- "latest unflagged NO2" --> DB
+    S3 -- "newest HH-site.csv" --> DB
+    DB -- "predict(intensity, hour)" --> MODEL
+
+    ROLE -- "write" --> IT
+    ROLE -- "list + read" --> DB
+
+    USER -- "HTTP 8080" --> DB
+    DEV -- "SSH 22, docker build" --> ec2
+    DEV -. "build_training_data.py → predict.py<br/>model.pkl copied in at image build" .-> MODEL
+```
+
+Solid lines run every hour (ingestion) or on every request (dashboard). The
+dashed line runs only when the model is retrained, which is a manual step.
+
+### Components
+
+| Component | Role | Runs as |
+|---|---|---|
+| `airbreda-air` | Fetches NO2 for NL10240, flags null/stale values, upserts into RDS. | cron at :00, `--rm`, 150 MB cap |
+| `airbreda-traffic` | Downloads the NDW file, extracts the 4 A27 sites, upserts into RDS and uploads one CSV per site to S3. | cron at :05, `--rm`, 150 MB cap |
+| `airbreda-dashboard` | `/site/{id}` combines the latest NO2 (RDS), the site's latest intensity (S3) and `predict()`. `/` is an HTML page that calls `/site/{id}` for each site. | `-d --restart unless-stopped`, port 8080 |
+| `model.pkl` | LinearRegression on `total_intensity_veh_per_hr` + `hour_of_day`. Risk is a sigmoid around 40 µg/m³ (ADR-006). | Read-only file inside the dashboard image |
+| RDS PostgreSQL | Source of truth for parsed readings (`sensor_readings`, `is_flagged`). | Managed, SG allows only the VM |
+| S3 bucket | Per-site traffic CSVs. Written by traffic ingestion, read by the dashboard. | Managed, reached via the instance role |
+
+### Where the model lives and how the dashboard uses it
+
+1. **Train offline (laptop):** `build_training_data.py` joins NO2 from RDS
+   with traffic from S3 into `training_data.csv`. `predict.py` fits the model
+   and writes `model/model.pkl`. `evaluate.py` and `tests/test_model.py`
+   check it.
+2. **Bake into the image:** `Dockerfile.dashboard` copies `model.pkl` next to
+   `predict.py`, so the model and the code that builds its features ship
+   (and roll back) as one image.
+3. **Serve:** on each `/site/{id}` request, the dashboard rounds the S3
+   timestamp to the hour in UTC, calls `predict()` and adds
+   `no2_ug_m3_predicted` and `no2_exceedance_risk` to the response. If
+   `predict()` fails, both fields are `null` and the measured values are
+   still returned.
+
+### Local mirror (Docker Compose)
+
+`docker compose up` runs the same three images on the `airbreda` network,
+plus the Day 2 Redis queue, against the same RDS and S3. The differences
+from the VM: the ingest services poll in a loop instead of being started by
+cron (so the dashboard's `/health` can reach them by service name), S3
+access comes from AWS keys in `.env` instead of the instance role, and the
+dashboard is on `localhost:8080`.
+
+### Changes since Checkpoint 3
+
+- **Added the dashboard container** on the same VM (ADR-005), with port 8080
+  opened in the security group. It's the first long-running process on the VM.
+- **Added the model:** trained offline, baked into the dashboard image,
+  served through `predict()` (ADR-006).
+- **Memory:** the 1 GB VM ran out of memory with three Python containers.
+  Ingestion is now capped and staggered (:00 / :05), and a 2 GB swap file was
+  added after the cap alone didn't stop the processes being killed.
+- **Still open:** S3 holds parsed CSVs rather than raw payloads (ADR-001), the
+  ingest containers' `/health` isn't reachable on the VM because they exit
+  after each run, and the single VM doesn't yet meet ADR-003's Warm Standby.
