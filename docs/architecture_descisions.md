@@ -140,18 +140,6 @@ long-running web server, not a job that runs for a minute and exits.
 **Decision.** Run the dashboard as a **third container on the same EC2
 t3.micro**, started with `docker run -d --restart unless-stopped -p 8080:8000`.
 
-**Why the same VM instead of a managed container service**
-- It's one small FastAPI process serving one interchange to a handful of
-  users. The VM is idle about 58 minutes every hour, so it has room.
-- No extra cost: still about **$12.70/month**. A Fargate service plus a load
-  balancer would add roughly $25–30/month for the same single container.
-- The image runs exactly like the other two, so the deploy is the same
-  `docker build` / `docker run` I already know.
-- **What would change my mind:** the 99.5% SLO from ADR-003 actually being
-  missed, needing HTTPS or more than one instance (then **ECS Fargate behind
-  an ALB**, or App Runner), or the 1 GB of RAM running out once more
-  corridors are added.
-
 **How it runs long-term, and what happens on a reboot**
 - `--restart unless-stopped` restarts the container if it crashes, and the
   Docker daemon is enabled at boot (`systemctl enable docker`), so after a
@@ -206,13 +194,11 @@ training set (`training_data.csv`) has **6 hourly rows** so far.
 **Why a linear regression is enough model**
 - 6 rows and 2 features. Anything more flexible (trees, boosting) would
   memorise the six points rather than learn from them.
-- Plotting NO₂ against total intensity (`plots/`) doesn't show a linear
-  relationship at all. With 6 points that's most likely too little data
-  or plain noise, so it neither confirms nor rules out a linear model.
-- **What would change that:** a few hundred hours (weeks of data) to add
-  features like weekday and wind, which drive NO₂ more than traffic does.
-  A non-linear model only makes sense with a few thousand hours (several
-  months, covering seasons), and only if it beats the regression on CV.
+- Plotting NO₂ against total intensity (`plots/`) shows no clear linear
+  relationship, but 6 points are too few to confirm or rule one out.
+- **What would change that:** weeks of data, to add features like weekday
+  and wind, which drive NO₂ more than traffic does. A non-linear model only
+  after months of data, and only if it beats the regression on CV.
 
 **Evaluation: what the numbers do and don't tell me** (`evaluate.py`)
 - Leave-one-out CV: **R² 0.42, MAE 6.6 µg/m³**, against R² −0.44,
@@ -222,18 +208,15 @@ training set (`training_data.csv`) has **6 hourly rows** so far.
 - **What they don't:** with 6 points and 3 fitted parameters there are
   hardly any degrees of freedom left. The numbers say nothing about other
   seasons, weekdays or hours outside 12:00–20:00.
-- The coefficients are unreliable. Intensity and hour are almost collinear
-  (r = −0.97), so their effects can't be separated: hour's coefficient
-  (−3.55) even has the opposite sign of its own correlation with NO₂
-  (+0.77). I don't read them causally; more data across a wider range of
-  hours and traffic levels should stabilise them.
+- The coefficients are unreliable: intensity and hour are almost collinear
+  (r = −0.97), so their effects can't be separated. I don't read them
+  causally.
 
 **How risk is derived: threshold 40 µg/m³**
 - 40 µg/m³ is the EU annual limit value (and the old WHO 2005 guideline).
   The WHO 2021 guideline is much stricter: 10 µg/m³ annual, 25 µg/m³ daily.
-- These are **annual / daily averages**, and I'm applying them to **hourly**
-  values. A single hour above 40 isn't a legal exceedance; the EU hourly
-  limit is 200 µg/m³. So "risk" here means "this hour is high for this
+- These are **annual / daily averages** applied to **hourly** values (the EU
+  hourly limit is 200 µg/m³). So "risk" means "this hour is high for this
   interchange", not "a limit is being broken".
 - WHO's 10 or 25 would flag every hour I've measured (26–51 µg/m³), so it
   wouldn't tell hours apart. 40 splits my data (2 of 6 hours above).
@@ -254,31 +237,23 @@ regression's prediction (`predict.py`).
 - Both rank the hours the same way and both get the 20:00 row wrong (no
   exceedance, ~0.5–0.7 risk).
 - The logistic model is more cautious, but it's trained on **2 positive
-  examples**. Its probabilities aren't really calibrated, and with so few
-  positives it can't learn much.
-- **I trust the sigmoid-on-regression more for now.** The regression uses the
-  actual NO₂ value of every row, not just above/below, so it gets more
-  information from 6 rows. It's also one model to maintain, and the risk is
-  easy to explain ("predicted 44, threshold 40"). The trade-off: steepness
-  0.2 is a guess, not learned from data.
-- Revisit once there are weeks of hourly data with enough exceedances to
-  train and calibrate a classifier.
+  examples**, so its probabilities aren't calibrated.
+- **I trust the sigmoid-on-regression more for now:** it learns from every
+  row's actual NO₂ value, it's one model to maintain, and the risk is easy
+  to explain ("predicted 44, threshold 40"). The trade-off: steepness 0.2 is
+  a guess. Revisit once there are enough exceedances to train a classifier.
 
 **Training-serving skew, and why the model is baked into the image**
-- Skew means the model sees different inputs live than it saw in training.
-  For example, `hour_of_day` in local time instead of UTC, or a reading that
-  isn't rounded to the hour. The dashboard rounds the S3 timestamp in UTC
-  the same way `build_training_data.py` does, to avoid this.
+- Skew means the model sees different inputs live than in training, e.g.
+  `hour_of_day` in local time instead of UTC. The dashboard rounds the S3
+  timestamp in UTC the same way `build_training_data.py` does.
 - **There is one real skew today:** the model was trained on the **total**
-  of the four sites, but `/site/{id}` passes in **one** site's intensity.
-  A single site's flow (300–2,000 veh/hr) is often below the lowest
-  total the model has seen (1,320), so per-site predictions are
-  extrapolations. Fix: pass the total, or retrain per site.
-- Baking `model.pkl` into the image means the model, the feature code in
-  `predict.py` and the pinned library versions ship and roll back together
-  as one image tag. Retraining live on the VM could silently produce a
-  different model than the one `evaluate.py` and `tests/test_model.py`
-  checked, trained on whatever the database held at that moment.
+  of the four sites, but `/site/{id}` passes in **one** site's intensity,
+  often below the lowest total it has seen (1,320). Per-site predictions are
+  extrapolations; `/interchange` passes the total and is the one to trust.
+- Baking `model.pkl` into the image means the model, the feature code and
+  the pinned library versions ship and roll back together as one image tag.
+  Retraining live on the VM could silently produce a model nobody evaluated.
 - One remaining risk: the pickle was made with scikit-learn 1.9.0 locally,
   but the image pins 1.9.1. It should be trained inside the same image.
 
@@ -289,18 +264,16 @@ regression's prediction (`predict.py`).
   it isn't standing in for somewhere it can't see.
 - That's also why the model uses their **total** intensity: one NO₂ reading
   can't tell which ramp it came from.
-- **What would force a second station:** a second interchange far enough
-  away that its air isn't what NL10240 measures (a different road, or a
-  different wind exposure). It would need its own station, training rows
-  and model, otherwise its predictions are made from another place's air.
+- **What would force a second station:** an interchange far enough away that
+  NL10240 doesn't measure its air. It would need its own station, training
+  rows and model.
 
 **What `/site/{id}` returns if `predict()` fails**
 - The request still returns **200** with the real `no2_ug_m3` and
   `intensity_veh_per_hr`. Only `no2_ug_m3_predicted` and
   `no2_exceedance_risk` are `null`, which the page shows as "–".
-- I chose this over a 500 because the measured values are the more
-  important part, and they're fine: a broken model shouldn't take the
-  real readings down with it, and it would count against the 99.5% SLO.
+- I chose this over a 500 because a broken model shouldn't take the real
+  readings down with it, and a 500 would count against the 99.5% SLO.
 - The trade-off: a `null` is easy to miss. The exception is swallowed
   without a log line, so it should log a `predict_failed` error the same
   way ingestion logs `redis_publish_failed`.

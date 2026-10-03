@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirBreda Dashboard</title>
+  <meta name="description" content="Live NO₂ and traffic at the A27 interchange near Breda, with the model's exceedance risk per site.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* Same tokens and components as docs/style.css, plus status colours and the chart. */
+    :root {
+      --bg: #f7f9fc; --surface: #ffffff; --surface-2: #eef3fb; --border: #dfe6f1;
+      --text: #0f1b2d; --muted: #5a6b85; --blue: #1f5fd1; --blue-strong: #1748a3; --blue-soft: #e4edfc;
+      --grid: #e6ebf3;
+      --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+      --good-soft: #e3f5e3; --warning-soft: #fef3da; --critical-soft: #fbe6e6;
+      --shadow: 0 1px 2px rgba(15, 27, 45, .04), 0 8px 24px rgba(15, 27, 45, .06);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0b1220; --surface: #121b2e; --surface-2: #17233b; --border: #24324d;
+        --text: #e6edf8; --muted: #93a3bd; --blue: #5b95f5; --blue-strong: #8ab4ff; --blue-soft: #1a2a48;
+        --grid: #1e2a42;
+        --good-soft: #12301f; --warning-soft: #3a2e12; --critical-soft: #3a1a1e;
+        --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #0b1220; --surface: #121b2e; --surface-2: #17233b; --border: #24324d;
+      --text: #e6edf8; --muted: #93a3bd; --blue: #5b95f5; --blue-strong: #8ab4ff; --blue-soft: #1a2a48;
+      --grid: #1e2a42;
+      --good-soft: #12301f; --warning-soft: #3a2e12; --critical-soft: #3a1a1e;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+           font: 16px/1.6 "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { color: var(--blue-strong); }
+    code, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+    code { font-size: .88em; background: var(--surface-2); padding: .1em .4em; border-radius: 6px; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+
+    nav { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(10px);
+          background: color-mix(in srgb, var(--bg) 82%, transparent); border-bottom: 1px solid var(--border); }
+    nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); }
+    .logo { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+            background: linear-gradient(135deg, var(--blue), #4fa3f7); color: #fff; font-size: 15px; }
+    .nav-links { display: flex; gap: 6px; align-items: center; }
+    .nav-links a { color: var(--muted); font-size: 14px; font-weight: 500; padding: 6px 10px; border-radius: 8px; }
+    .nav-links a:hover { color: var(--text); background: var(--surface-2); }
+    .nav-links a.active { color: var(--blue); background: var(--blue-soft); }
+    .gh { display: inline-flex; align-items: center; gap: 6px; }
+    .gh svg { width: 18px; height: 18px; fill: currentColor; }
+
+    .page-hero { padding-top: 48px; padding-bottom: 28px; }
+    .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600;
+               color: var(--blue); background: var(--blue-soft); padding: 6px 12px; border-radius: 999px; }
+    .eyebrow::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--blue);
+                       animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .35; } }
+    @media (prefers-reduced-motion: reduce) { .eyebrow::before { animation: none; } }
+    h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.1; letter-spacing: -.03em; margin: 16px 0 12px; }
+    h1 span { background: linear-gradient(90deg, var(--blue), #4fa3f7); -webkit-background-clip: text;
+              background-clip: text; color: transparent; }
+    .lede { max-width: 720px; margin: 0; color: var(--muted); font-size: 17px; }
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 22px;
+               font-size: 14px; color: var(--muted); }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 10px;
+           font: 600 14px "Inter", system-ui, sans-serif; border: 1px solid var(--border); background: var(--surface);
+           color: var(--text); box-shadow: var(--shadow); cursor: pointer; }
+    .btn:hover { border-color: var(--blue); }
+    .btn:disabled { opacity: .6; cursor: progress; }
+
+    section { padding: 14px 0; }
+    h2 { font-size: 20px; letter-spacing: -.02em; margin: 0; }
+    .sub { color: var(--muted); margin: 2px 0 0; font-size: 14px; }
+
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px;
+            box-shadow: var(--shadow); min-width: 0; }
+    .stat .label { font-size: 13px; color: var(--muted); font-weight: 500; }
+    .stat .value { display: block; font-size: 30px; font-weight: 600; letter-spacing: -.02em; margin: 4px 0 2px; }
+    .stat .value small { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+    .stat .note { font-size: 13px; color: var(--muted); }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+            box-shadow: var(--shadow); overflow: hidden; }
+    .card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;
+                 padding: 20px 22px 0; }
+    .card-body { padding: 16px 22px 20px; }
+    .card-foot { border-top: 1px solid var(--border); padding: 12px 22px; font-size: 13px; color: var(--muted);
+                 background: var(--surface-2); }
+
+    .seg { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+    .seg button { border: 0; background: transparent; color: var(--muted); font: 500 13px "Inter", system-ui, sans-serif;
+                  padding: 5px 10px; border-radius: 7px; cursor: pointer; }
+    .seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+
+    /* Chart */
+    .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+    .legend .k { display: inline-flex; align-items: center; gap: 6px; }
+    .legend .line { width: 18px; height: 0; border-top: 2px solid var(--blue); }
+    .legend .limit { width: 18px; height: 0; border-top: 2px dashed var(--critical); }
+    .legend .pred { width: 10px; height: 10px; transform: rotate(45deg); background: var(--surface); border: 2px solid var(--blue); }
+    .chart { position: relative; height: 280px; }
+    .chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+    .chart .tick { font: 12px "Inter", system-ui, sans-serif; fill: var(--muted); font-variant-numeric: tabular-nums; }
+    .chart .lbl { font: 600 12px "Inter", system-ui, sans-serif; fill: var(--text); }
+    .chart .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 14px; }
+    .tip { position: absolute; pointer-events: none; background: var(--text); color: var(--bg); font-size: 13px;
+           padding: 6px 10px; border-radius: 8px; white-space: nowrap; transform: translate(-50%, calc(-100% - 12px));
+           opacity: 0; transition: opacity .1s; }
+    .tip b { font-weight: 600; }
+    details.data { margin-top: 10px; font-size: 13px; color: var(--muted); }
+    details.data summary { cursor: pointer; }
+    details.data .scroll { max-height: 220px; overflow: auto; margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+         font-weight: 600; background: var(--surface-2); padding: 12px 18px; white-space: nowrap; }
+    td { padding: 14px 18px; border-top: 1px solid var(--border); vertical-align: middle; }
+    tbody tr:hover td { background: color-mix(in srgb, var(--blue-soft) 45%, transparent); }
+    th .unit { text-transform: none; letter-spacing: 0; font-weight: 500; }
+    td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .site { display: flex; align-items: center; gap: 10px; }
+    .site .id { font-family: "JetBrains Mono", monospace; font-weight: 500; font-size: 13px; background: var(--blue-soft);
+                color: var(--blue); padding: 2px 8px; border-radius: 6px; }
+    .site small { display: block; color: var(--muted); font-size: 12px; line-height: 1.3; }
+    .bar { display: flex; align-items: center; gap: 10px; min-width: 170px; }
+    .bar .track { flex: 1; height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+    .bar .fill { height: 100%; background: var(--blue); border-radius: 0 4px 4px 0; }
+    .bar .num { width: 56px; text-align: right; font-variant-numeric: tabular-nums; }
+    .muted { color: var(--muted); }
+    .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 9px;
+            border-radius: 999px; white-space: nowrap; color: var(--text); background: var(--surface-2); }
+    .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .pill.good { background: var(--good-soft); } .pill.good::before { background: var(--good); }
+    .pill.warning { background: var(--warning-soft); } .pill.warning::before { background: var(--warning); }
+    .pill.critical { background: var(--critical-soft); } .pill.critical::before { background: var(--critical); }
+    .risk { display: flex; align-items: center; gap: 10px; }
+    .meter { width: 64px; height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; flex: none; }
+    .meter span { display: block; height: 100%; border-radius: 3px; }
+    .stat .meter { width: 100%; height: 8px; margin: 6px 0 8px; }
+    tr.total td { background: var(--surface-2); font-weight: 600; }
+
+    .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    .src { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0;
+           border-top: 1px solid var(--border); }
+    .src:first-child { border-top: 0; padding-top: 0; }
+    .src b { display: block; font-size: 15px; }
+    .src small { color: var(--muted); font-size: 13px; }
+    dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 0; font-size: 14px; }
+    dl.facts dt { color: var(--muted); }
+    dl.facts dd { margin: 0; }
+
+    .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; align-items: center; gap: 10px; }
+    .col { display: grid; gap: 10px; }
+    .node { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px;
+            font-size: 14px; text-align: center; }
+    .node small { display: block; color: var(--muted); font-size: 12px; }
+    .node.hl { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .node.hl small { color: rgba(255,255,255,.8); }
+    .arrow { color: var(--blue); font-size: 20px; text-align: center; }
+
+    .error { display: none; margin-top: 14px; padding: 12px 16px; border-radius: 12px; font-size: 14px;
+             background: var(--critical-soft); border-left: 4px solid var(--critical); }
+    .error.on { display: block; }
+    footer { padding: 32px 0 48px; color: var(--muted); font-size: 14px; text-align: center; }
+
+    @media (max-width: 900px) {
+      .stats { grid-template-columns: 1fr 1fr; }
+      .two { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .nav-links a.hide-sm { display: none; }
+    }
+    @media (max-width: 480px) {
+      .stats { grid-template-columns: 1fr; }
+      .chart { height: 230px; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="/"><span class="logo">◎</span> AirBreda</a>
+    <div class="nav-links">
+      <a class="active" href="/">Dashboard</a>
+      <a class="hide-sm" href="/docs">API</a>
+      <a class="hide-sm" href="/health">Health</a>
+      <a class="gh" href="https://github.com/SebastiaanBotter244915/system-design-cloud-platforms" aria-label="GitHub repository">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span class="hide-sm">GitHub</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<header class="wrap page-hero">
+  <span class="eyebrow">Live · A27 interchange, Breda</span>
+  <h1>Is traffic pushing NO₂ over <span>the limit?</span></h1>
+  <p class="lede">Hourly NO₂ from Luchtmeetnet station NL10240 next to the A27, and traffic from four NDW loop
+    detectors on the same interchange. A model trained on both predicts NO₂ from the traffic and turns that into the
+    risk of going over the 40 µg/m³ EU limit.</p>
+  <div class="toolbar">
+    <button class="btn" id="refresh" type="button">↻ Refresh</button>
+    <span>Traffic reading from <b id="updated">…</b></span>
+    <span id="stale"></span>
+    <span>Refreshes every 5 minutes</span>
+  </div>
+  <div class="error" id="error" role="alert"></div>
+</header>
+
+<main class="wrap">
+
+  <section>
+    <div class="stats">
+      <div class="stat">
+        <span class="label">Traffic on the interchange</span>
+        <span class="value"><span id="k-total">…</span><small>veh/hr</small></span>
+        <span class="note">All four sites added together</span>
+      </div>
+      <div class="stat">
+        <span class="label">Measured NO₂ at NL10240</span>
+        <span class="value"><span id="k-actual">…</span><small>µg/m³</small></span>
+        <span class="note" id="k-actual-note">&nbsp;</span>
+      </div>
+      <div class="stat">
+        <span class="label">Predicted NO₂ from that traffic</span>
+        <span class="value"><span id="k-pred">…</span><small>µg/m³</small></span>
+        <span class="note" id="k-pred-note">&nbsp;</span>
+      </div>
+      <div class="stat">
+        <span class="label">Exceedance risk</span>
+        <span class="value" id="k-risk">…</span>
+        <div class="meter"><span id="k-risk-meter"></span></div>
+        <span id="k-risk-pill"></span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>NO₂ at NL10240 compared with the EU limit</h2>
+          <p class="sub">Hourly averages from Luchtmeetnet, flagged readings left out</p>
+        </div>
+        <div class="seg" role="group" aria-label="Time range">
+          <button type="button" data-hours="24" aria-pressed="false">24 h</button>
+          <button type="button" data-hours="48" aria-pressed="true">48 h</button>
+          <button type="button" data-hours="168" aria-pressed="false">7 days</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="legend">
+          <span class="k"><span class="line"></span>Measured NO₂</span>
+          <span class="k"><span class="pred"></span>Predicted now (interchange)</span>
+          <span class="k"><span class="limit"></span>EU limit, 40 µg/m³</span>
+        </div>
+        <div class="chart" id="chart" role="img" aria-label="Line chart of hourly NO₂ at NL10240 against the 40 µg/m³ limit">
+          <svg id="chart-svg"></svg>
+          <div class="tip" id="tip"></div>
+          <div class="empty" id="chart-empty">Loading…</div>
+        </div>
+        <details class="data">
+          <summary>Show the readings as a table</summary>
+          <div class="scroll"><table><thead><tr><th>Time</th><th class="r">NO₂ <span class="unit">µg/m³</span></th></tr></thead>
+            <tbody id="history-rows"></tbody></table></div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>Per-site readings</h2>
+          <p class="sub">Newest hourly file per NDW site in S3, the NO₂ measured at NL10240, and the model's prediction for that site alone</p>
+        </div>
+      </div>
+      <div class="card-body" style="padding: 16px 0 0">
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Site</th>
+              <th>Intensity <span class="unit">veh/hr</span></th>
+              <th class="r">Measured NO₂ <span class="unit">µg/m³</span></th>
+              <th class="r">Predicted NO₂ <span class="unit">µg/m³</span></th>
+              <th>Exceedance risk</th>
+              <th class="r">Reading</th>
+            </tr></thead>
+            <tbody id="sites"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card-foot">
+        The model was trained on the <b>total</b> of all four sites. One site's traffic is usually lower than any total it
+        has seen, so per-site predictions are extrapolations. The interchange row is the one to trust (ADR-006).
+      </div>
+    </div>
+  </section>
+
+  <section class="two">
+    <div class="card">
+      <div class="card-head"><div><h2>Pipeline health</h2><p class="sub">The ingest containers' own <code>/health</code></p></div></div>
+      <div class="card-body" id="health"><span class="muted">Loading…</span></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><div><h2>About the model</h2><p class="sub">What the prediction and the risk mean</p></div></div>
+      <div class="card-body">
+        <dl class="facts">
+          <dt>Model</dt><dd>Linear regression in scikit-learn, packed into the dashboard image</dd>
+          <dt>Inputs</dt><dd>Total intensity (veh/hr) and hour of day (UTC)</dd>
+          <dt>Risk</dt><dd>A sigmoid around 40 µg/m³ with steepness 0.2, so the risk is 50% when the prediction is exactly 40</dd>
+          <dt>Levels</dt><dd><span class="pill good">Low</span> under 20% &nbsp;<span class="pill warning">Moderate</span> 20–50% &nbsp;<span class="pill critical">High</span> 50% or more</dd>
+          <dt>Caveat</dt><dd>40 µg/m³ is the EU <em>annual</em> mean limit. Here it is applied to single hours as an early warning.</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <div class="card-head"><div><h2>Where the numbers come from</h2><p class="sub">Two open-data sources, stored in AWS, joined by hour</p></div></div>
+      <div class="card-body">
+        <div class="flow">
+          <div class="col">
+            <div class="node">Luchtmeetnet API<small>NO₂ hourly, NL10240</small></div>
+            <div class="node">NDW open data<small>4 A27 sites, ~1 min</small></div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="col">
+            <div class="node">air-ingest<small>Docker on EC2</small></div>
+            <div class="node">traffic-ingest<small>Docker on EC2</small></div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="col">
+            <div class="node">RDS PostgreSQL<small>sensor_readings</small></div>
+            <div class="node">S3 bucket<small>ndw/ hourly CSVs</small></div>
+          </div>
+          <div class="arrow">→</div>
+          <div class="node hl">Dashboard + model<small>FastAPI, this page</small></div>
+        </div>
+        <p class="sub" style="margin-top: 14px">NDW publishes traffic for the whole country about every minute. The traffic ingest keeps the four A27 sites,
+          adds them up per hour and writes one CSV per site to S3.</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>AirBreda · Cloud System Design, BUas · Data: Luchtmeetnet &amp; NDW open data</footer>
+
+<script>
+  const SITES = [
+    { id: "hrl", name: "A27 mainline", role: "Direction 1" },
+    { id: "hrr", name: "A27 mainline", role: "Direction 2" },
+    { id: "vwd", name: "Entry slip road", role: "Leaving Breda" },
+    { id: "vwa", name: "Exit slip road", role: "Into Breda" },
+  ];
+  const LIMIT = 40;
+  const STALE_MS = 2 * 60 * 60 * 1000;  // ingestion runs hourly
+  const $ = id => document.getElementById(id);
+  const fmt = (v, d = 0) => v == null ? "–" : Number(v).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  let hours = 48;
+  let historyData = [];
+  let interchangeData = null;
+
+  function level(risk) {
+    if (risk == null) return null;
+    if (risk < 0.2) return { cls: "good", label: "Low", color: "--good" };
+    if (risk < 0.5) return { cls: "warning", label: "Moderate", color: "--warning" };
+    return { cls: "critical", label: "High", color: "--critical" };
+  }
+  function riskCell(risk) {
+    const l = level(risk);
+    if (!l) return '<span class="muted">–</span>';
+    return `<div class="risk"><div class="meter"><span style="width:${risk * 100}%;background:var(${l.color})"></span></div>` +
+           `<span class="mono">${fmt(risk * 100, 0)}%</span><span class="pill ${l.cls}">${l.label}</span></div>`;
+  }
+  function ago(ts) {
+    const min = Math.round((Date.now() - Date.parse(ts)) / 60000);
+    if (min < 60) return `${min} min ago`;
+    const h = Math.round(min / 60);
+    return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
+  }
+  const getJSON = url => fetch(url).then(r => {
+    if (!r.ok) return r.json().catch(() => ({})).then(b => { throw new Error(`${url}: ${b.detail || "HTTP " + r.status}`); });
+    return r.json();
+  });
+
+  function renderKpis(sites, inter) {
+    const actual = sites.find(s => s)?.no2_ug_m3;
+    $("k-actual").textContent = fmt(actual, 1);
+    if (actual != null) {
+      const diff = actual - LIMIT;
+      $("k-actual-note").textContent = diff < 0 ? `${fmt(-diff, 1)} below the 40 µg/m³ limit` : `${fmt(diff, 1)} above the 40 µg/m³ limit`;
+    }
+    $("k-total").textContent = fmt(inter?.total_intensity_veh_per_hr);
+    $("k-pred").textContent = fmt(inter?.no2_ug_m3_predicted, 1);
+    if (inter?.no2_ug_m3_predicted != null && actual != null) {
+      const d = inter.no2_ug_m3_predicted - actual;
+      $("k-pred-note").textContent = `${d >= 0 ? "+" : "−"}${fmt(Math.abs(d), 1)} compared with the measured value`;
+    }
+    const risk = inter?.no2_exceedance_risk;
+    const l = level(risk);
+    $("k-risk").textContent = risk == null ? "–" : `${fmt(risk * 100, 0)}%`;
+    $("k-risk-meter").style.width = risk == null ? "0" : `${risk * 100}%`;
+    $("k-risk-meter").style.background = l ? `var(${l.color})` : "";
+    $("k-risk-pill").innerHTML = l ? `<span class="pill ${l.cls}">${l.label} risk</span>` : "";
+  }
+
+  function renderTable(sites, inter) {
+    const ok = sites.filter(Boolean);
+    const actual = ok[0]?.no2_ug_m3;
+    const max = Math.max(1, ...ok.map(s => s.intensity_veh_per_hr));
+    const rows = SITES.map((meta, i) => {
+      const s = sites[i];
+      const head = `<td><div class="site"><span class="id">${meta.id}</span><div>${meta.name}<small>${meta.role}</small></div></div></td>`;
+      if (!s) return `<tr>${head}<td colspan="5" class="muted">No reading available</td></tr>`;
+      const v = s.intensity_veh_per_hr;
+      return `<tr>${head}
+        <td><div class="bar"><div class="track"><div class="fill" style="width:${v / max * 100}%"></div></div><span class="num">${fmt(v)}</span></div></td>
+        <td class="r">${fmt(s.no2_ug_m3, 1)}</td>
+        <td class="r">${fmt(s.no2_ug_m3_predicted, 1)}</td>
+        <td>${riskCell(s.no2_exceedance_risk)}</td>
+        <td class="r muted" title="${esc(new Date(s.timestamp).toLocaleString())}">${ago(s.timestamp)}</td></tr>`;
+    });
+    if (inter) {
+      rows.push(`<tr class="total"><td><div class="site"><span class="id">all</span><div>Whole interchange<small>Model input</small></div></div></td>
+        <td><div class="bar"><div class="track"></div><span class="num">${fmt(inter.total_intensity_veh_per_hr)}</span></div></td>
+        <td class="r">${fmt(actual, 1)}</td>
+        <td class="r">${fmt(inter.no2_ug_m3_predicted, 1)}</td>
+        <td>${riskCell(inter.no2_exceedance_risk)}</td>
+        <td class="r muted">${ago(inter.timestamp)}</td></tr>`);
+    }
+    $("sites").innerHTML = rows.join("");
+  }
+
+  function renderHealth(h) {
+    if (!h) { $("health").innerHTML = '<span class="muted">Health endpoint unavailable</span>'; return; }
+    $("health").innerHTML = h.sources.map(s => {
+      if (s.error) return `<div class="src"><div><b>${esc(s.url)}</b><small>${esc(s.error)}</small></div><span class="pill critical">Down</span></div>`;
+      const last = s.last_successful_fetch;
+      const fresh = last && Date.now() - Date.parse(last) < STALE_MS;
+      const bad = s.bad_data_count || 0;
+      const pill = !last ? '<span class="pill warning">No fetch yet</span>'
+        : !fresh ? '<span class="pill critical">Stale</span>'
+        : bad > 0 ? `<span class="pill warning">${bad} bad readings</span>`
+        : '<span class="pill good">Healthy</span>';
+      return `<div class="src"><div><b>${esc(s.source)}</b><small>Last fetch: ${last ? esc(new Date(last).toLocaleString()) + " (" + ago(last) + ")" : "never"} · bad readings: ${bad}</small></div>${pill}</div>`;
+    }).join("");
+  }
+
+  function renderHistoryTable() {
+    $("history-rows").innerHTML = historyData.slice().reverse().map(r =>
+      `<tr><td>${new Date(r.t).toLocaleString()}</td><td class="r">${fmt(r.v, 1)}</td></tr>`).join("");
+  }
+
+  // ---------- Chart (plain SVG) ----------
+  function drawChart() {
+    const box = $("chart"), svg = $("chart-svg"), tip = $("tip");
+    const W = box.clientWidth, H = box.clientHeight;
+    const pred = interchangeData?.no2_ug_m3_predicted != null
+      ? { t: Date.parse(interchangeData.timestamp), v: interchangeData.no2_ug_m3_predicted } : null;
+    $("chart-empty").style.display = historyData.length ? "none" : "grid";
+    if (!historyData.length) { svg.innerHTML = ""; $("chart-empty").textContent = "No readings in this range"; return; }
+
+    const m = { l: 36, r: 64, t: 12, b: 28 };
+    const now = Date.now();
+    const t0 = now - hours * 3600e3;
+    const t1 = Math.max(now, ...historyData.map(d => d.t), pred ? pred.t : 0);
+    const vmax = Math.max(LIMIT, ...historyData.map(d => d.v), pred ? pred.v : 0);
+    const step = vmax > 80 ? 20 : 10;
+    const ymax = Math.ceil((vmax + 5) / step) * step;
+    const x = t => m.l + (t - t0) / (t1 - t0) * (W - m.l - m.r);
+    const y = v => H - m.b - v / ymax * (H - m.t - m.b);
+    const blue = css("--blue"), grid = css("--grid"), crit = css("--critical"), surf = css("--surface");
+
+    let g = "";
+    for (let v = 0; v <= ymax; v += step) {
+      g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="${grid}" stroke-width="1"/>`;
+      g += `<text class="tick" x="${m.l - 8}" y="${y(v) + 4}" text-anchor="end">${v}</text>`;
+    }
+    // x ticks: every 6 h for 24 h, 12 h for 48 h, daily for 7 days (local time)
+    const tickH = hours <= 24 ? 6 : hours <= 48 ? 12 : 24;
+    const first = new Date(t0); first.setMinutes(0, 0, 0);
+    first.setHours(Math.ceil(first.getHours() / tickH) * tickH);
+    for (let t = first.getTime(); t <= t1; t += tickH * 3600e3) {
+      const d = new Date(t);
+      const label = tickH === 24 || d.getHours() === 0
+        ? d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" })
+        : d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      g += `<text class="tick" x="${x(t)}" y="${H - 8}" text-anchor="middle">${label}</text>`;
+    }
+
+    // Line, broken where an hour is missing so gaps aren't drawn as data
+    const segs = [[]];
+    historyData.forEach((d, i) => {
+      if (i && d.t - historyData[i - 1].t > 90 * 60e3) segs.push([]);
+      segs[segs.length - 1].push(d);
+    });
+    for (const s of segs) {
+      const pts = s.map(d => `${x(d.t)},${y(d.v)}`).join(" ");
+      if (s.length > 1) g += `<polygon points="${x(s[0].t)},${y(0)} ${pts} ${x(s[s.length - 1].t)},${y(0)}" fill="${blue}" opacity=".1"/>`;
+      g += s.length > 1
+        ? `<polyline points="${pts}" fill="none" stroke="${blue}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`
+        : `<circle cx="${x(s[0].t)}" cy="${y(s[0].v)}" r="2.5" fill="${blue}"/>`;
+    }
+
+    // Limit line
+    g += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(LIMIT)}" y2="${y(LIMIT)}" stroke="${crit}" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+    // Skip the label when the prediction's label would sit on it; the legend still names the line
+    if (!pred || Math.abs(y(pred.v) - y(LIMIT)) > 14)
+      g += `<text class="tick" x="${W - m.r + 8}" y="${y(LIMIT) + 4}">limit 40</text>`;
+
+    // Latest measured value, labelled at the end of the line
+    const last = historyData[historyData.length - 1];
+    g += `<circle cx="${x(last.t)}" cy="${y(last.v)}" r="4.5" fill="${blue}" stroke="${surf}" stroke-width="2"/>`;
+    if (!pred || Math.abs(y(pred.v) - y(last.v)) > 14 || Math.abs(x(pred.t) - x(last.t)) > 40)
+      g += `<text class="lbl" x="${x(last.t) + 8}" y="${y(last.v) - 8}">${fmt(last.v, 1)}</text>`;
+
+    // Predicted value for the current traffic hour
+    if (pred) {
+      const px = x(pred.t), py = y(pred.v);
+      g += `<rect x="${px - 5}" y="${py - 5}" width="10" height="10" transform="rotate(45 ${px} ${py})" fill="${surf}" stroke="${blue}" stroke-width="2"/>`;
+      g += `<text class="lbl" x="${px + 10}" y="${py + 4}">${fmt(pred.v, 1)}</text>`;
+    }
+
+    // Hover crosshair
+    g += `<line id="xh" y1="${m.t}" y2="${H - m.b}" stroke="${css("--muted")}" stroke-width="1" opacity="0"/>`;
+    g += `<circle id="xd" r="5" fill="${blue}" stroke="${surf}" stroke-width="2" opacity="0"/>`;
+    g += `<rect x="${m.l}" y="${m.t}" width="${W - m.l - m.r}" height="${H - m.t - m.b}" fill="transparent" id="hit"/>`;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.innerHTML = g;
+
+    const hit = svg.querySelector("#hit"), xh = svg.querySelector("#xh"), xd = svg.querySelector("#xd");
+    const hide = () => { xh.setAttribute("opacity", 0); xd.setAttribute("opacity", 0); tip.style.opacity = 0; };
+    hit.addEventListener("pointermove", e => {
+      const r = svg.getBoundingClientRect();
+      const px = (e.clientX - r.left) * (W / r.width);
+      const t = t0 + (px - m.l) / (W - m.l - m.r) * (t1 - t0);
+      const d = historyData.reduce((a, b) => Math.abs(b.t - t) < Math.abs(a.t - t) ? b : a);
+      const cx = x(d.t), cy = y(d.v);
+      xh.setAttribute("x1", cx); xh.setAttribute("x2", cx); xh.setAttribute("opacity", .5);
+      xd.setAttribute("cx", cx); xd.setAttribute("cy", cy); xd.setAttribute("opacity", 1);
+      const over = d.v >= LIMIT ? " · over the limit" : "";
+      tip.innerHTML = `<b>${fmt(d.v, 1)} µg/m³</b>${over}<br>${new Date(d.t).toLocaleString(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" })}`;
+      tip.style.left = `${cx / W * 100}%`; tip.style.top = `${cy / H * 100}%`; tip.style.opacity = 1;
+    });
+    hit.addEventListener("pointerleave", hide);
+  }
+
+  // ---------- Loading ----------
+  function loadHistory() {
+    return getJSON(`/history?hours=${hours}`).then(h => {
+      historyData = h.readings.map(r => ({ t: Date.parse(r.timestamp), v: r.no2_ug_m3 }));
+      renderHistoryTable();
+      drawChart();
+    });
+  }
+
+  function load() {
+    $("refresh").disabled = true;
+    const errors = [];
+    const sitesP = Promise.all(SITES.map(s => getJSON("/site/" + s.id).catch(e => { errors.push(e.message); return null; })));
+    const interP = getJSON("/interchange").catch(e => { errors.push(e.message); return null; });
+    const healthP = getJSON("/health").catch(e => { errors.push(e.message); return null; });
+    const histP = loadHistory().catch(e => { errors.push(e.message); $("chart-empty").textContent = "NO₂ history unavailable"; });
+
+    Promise.all([sitesP, interP, healthP, histP]).then(([sites, inter, health]) => {
+      interchangeData = inter;
+      renderKpis(sites, inter);
+      renderTable(sites, inter);
+      renderHealth(health);
+      if (historyData.length) drawChart();
+
+      // Oldest of the four readings, so one stopped site still shows up.
+      const stamps = sites.filter(Boolean).map(s => Date.parse(s.timestamp));
+      if (stamps.length) {
+        const oldest = new Date(Math.min(...stamps));
+        $("updated").textContent = oldest.toLocaleString();
+        $("stale").innerHTML = Date.now() - oldest > STALE_MS ? '<span class="pill critical">Stale: is ingestion running?</span>' : '<span class="pill good">Up to date</span>';
+      }
+      $("error").classList.toggle("on", errors.length > 0);
+      $("error").innerHTML = errors.map(esc).join("<br>");
+      $("refresh").disabled = false;
+    });
+  }
+
+  document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
+    hours = Number(b.dataset.hours);
+    document.querySelectorAll(".seg button").forEach(o => o.setAttribute("aria-pressed", o === b));
+    loadHistory().catch(e => { $("chart-empty").style.display = "grid"; $("chart-empty").textContent = e.message; });
+  }));
+  $("refresh").addEventListener("click", load);
+  new ResizeObserver(() => historyData.length && drawChart()).observe($("chart"));
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => historyData.length && drawChart());
+
+  load();
+  setInterval(load, 5 * 60 * 1000);
+</script>
+</body>
+</html>
