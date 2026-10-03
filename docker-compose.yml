@@ -28,5 +28,16 @@ services:
     depends_on: [redis]
     networks: [airbreda]
 
+  dashboard:
+    image: airbreda-dashboard
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: dashboard
+    env_file: .env          # DB_* + AWS_* + S3_BUCKET
+    ports: ["8080:8000"]    # host 8000 is taken by air-ingest's /health
+    depends_on: [air-ingest, traffic-ingest]
+    networks: [airbreda]
+
 networks:
   airbreda:
